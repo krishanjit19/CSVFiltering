@@ -2,165 +2,200 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <string>
-#include <map>
+#include <cctype>
 
 using namespace std;
 
-struct CSVRow {
+struct Row {
     vector<string> columns;
 };
 
+struct TreeNode {
+    string value;
+    vector<TreeNode*> children;
+};
+
 class CSVReader {
-private:
-    string filename;
-    char delimiter;
-    vector<CSVRow> data;
-
 public:
-    CSVReader(const string& filename, char delimiter = ',') : filename(filename), delimiter(delimiter) {
-        data = readCSV();
-    }
+    CSVReader(const string& filename) : filename(filename) {}
 
-    vector<CSVRow> readCSV() {
-        vector<CSVRow> fileData;
+    bool readCSV() {
         ifstream file(filename);
-
         if (!file.is_open()) {
             cerr << "Error opening file: " << filename << endl;
-            return fileData;
+            return false;
         }
 
         string line;
         while (getline(file, line)) {
-            stringstream ss(line);
+            istringstream iss(line);
             string token;
-            CSVRow row;
+            Row row;
 
-            while (getline(ss, token, delimiter)) {
+            while (getline(iss, token, ',')) {
                 row.columns.push_back(token);
             }
 
-            fileData.push_back(row);
+            rows.push_back(row);
         }
 
         file.close();
-        return fileData;
+        return true;
     }
 
-    vector<CSVRow> filterRows(const string& filterExpression) {
-        vector<CSVRow> filteredData;
-
-        for (const auto& row : data) {
-            if (evaluateFilterExpression(row, filterExpression)) {
-                filteredData.push_back(row);
-            }
-        }
-
-        return filteredData;
+    const vector<Row>& getRows() const {
+        return rows;
     }
 
 private:
-    bool evaluateFilterExpression(const CSVRow& row, const string& filterExpression) {
-        map<string, string> columnValues;
+    vector<Row> rows;
+    string filename;
+};
 
-        for (size_t i = 0; i < row.columns.size(); ++i) {
-            columnValues["column_" + to_string(i + 1)] = row.columns[i];
+class FilterExpressionParser {
+public:
+    FilterExpressionParser(const string& expression) : expression(expression), currentPos(0) {}
+
+    TreeNode* parseExpression() {
+        return parseOr();
+    }
+
+private:
+    string expression;
+    size_t currentPos;
+
+    char getCurrentChar() const {
+        return (currentPos < expression.size()) ? expression[currentPos] : '\0';
+    }
+
+    void consumeChar() {
+        if (currentPos < expression.size()) {
+            ++currentPos;
         }
-
-        return evaluateExpression(filterExpression, columnValues);
     }
 
-    bool evaluateExpression(const string& expression, const map<string, string>& values) {
-        string parsedExpression = parseExpression(expression);
-        return evaluateParsedExpression(parsedExpression, values);
-    }
-
-    string parseExpression(const string& expression) {
-        string parsedExpression;
-        for (char c : expression) {
-            if (c == '(') {
-                parsedExpression += "( ";
-            } else if (c == ')') {
-                parsedExpression += " )";
-            } else {
-                parsedExpression += c;
-            }
+    TreeNode* parseOr() {
+        TreeNode* left = parseAnd();
+        while (getCurrentChar() == 'o' || getCurrentChar() == 'O') {
+            consumeChar();  // Consume 'o' or 'O'
+            consumeChar();  // Consume 'r' or 'R'
+            TreeNode* right = parseAnd();
+            TreeNode* orNode = new TreeNode;
+            orNode->value = "OR";
+            orNode->children.push_back(left);
+            orNode->children.push_back(right);
+            left = orNode;
         }
-        return parsedExpression;
+        return left;
     }
 
-    bool evaluateParsedExpression(const string& parsedExpression, const map<string, string>& values) {
-        istringstream iss(parsedExpression);
-        string token;
-        iss >> token;
-        if (token == "(") {
-            return evaluateAndOr(iss, values);
+    TreeNode* parseAnd() {
+        TreeNode* left = parseComparison();
+        while (getCurrentChar() == 'a' || getCurrentChar() == 'A') {
+            consumeChar();  // Consume 'a' or 'A'
+            consumeChar();  // Consume 'n' or 'N'
+            consumeChar();  // Consume 'd' or 'D'
+            TreeNode* right = parseComparison();
+            TreeNode* andNode = new TreeNode;
+            andNode->value = "AND";
+            andNode->children.push_back(left);
+            andNode->children.push_back(right);
+            left = andNode;
+        }
+        return left;
+    }
+
+    TreeNode* parseComparison() {
+        if (getCurrentChar() == '(') {
+            consumeChar();  // Consume '('
+            TreeNode* innerExpression = parseOr();
+            consumeChar();  // Consume ')'
+            return innerExpression;
         } else {
-            return evaluateComparison(token, iss, values);
+            return parseSimpleComparison();
         }
     }
 
-    bool evaluateAndOr(istringstream& iss, const map<string, string>& values) {
-        string token;
-        iss >> token;
-        bool result = (token == "and");
+    TreeNode* parseSimpleComparison() {
+        TreeNode* node = new TreeNode;
+        // Assume a simple comparison for demonstration purposes
+        while (isalnum(getCurrentChar()) || getCurrentChar() == '_') {
+            node->value += getCurrentChar();
+            consumeChar();
+        }
+        return node;
+    }
+};
 
-        while (true) {
-            string nextToken;
-            iss >> nextToken;
-            if (nextToken == "(") {
-                result = (token == "and") ? (result && evaluateAndOr(iss, values)) : (result || evaluateAndOr(iss, values));
-            } else if (nextToken == ")") {
-                break;
-            } else {
-                result = (token == "and") ? (result && evaluateComparison(nextToken, iss, values)) : (result || evaluateComparison(nextToken, iss, values));
+class FilterExpressionEvaluator {
+public:
+    FilterExpressionEvaluator(TreeNode* root) : root(root) {}
+
+    bool evaluateExpression(const Row& row) const {
+        return evaluateNode(root, row);
+    }
+
+private:
+    TreeNode* root;
+
+    bool evaluateNode(const TreeNode* node, const Row& row) const {
+        if (node->value == "AND") {
+            for (const TreeNode* child : node->children) {
+                if (!evaluateNode(child, row)) {
+                    return false;
+                }
             }
-        }
-
-        return result;
-    }
-
-    bool evaluateComparison(const string& columnName, istringstream& iss, const map<string, string>& values) {
-        string op, value;
-        iss >> op >> value;
-        string placeholder = "column_" + columnName;
-        return evaluateSingleComparison(values.at(placeholder), op, value);
-    }
-
-    bool evaluateSingleComparison(const string& columnValue, const string& op, const string& value) {
-        if (op == "=") {
-            return columnValue == value;
-        } else if (op == "!=") {
-            return columnValue != value;
-        } else if (op == "<") {
-            return stoi(columnValue) < stoi(value);
-        } else if (op == "<=") {
-            return stoi(columnValue) <= stoi(value);
-        } else if (op == ">") {
-            return stoi(columnValue) > stoi(value);
-        } else if (op == ">=") {
-            return stoi(columnValue) >= stoi(value);
-        } else {
-            cerr << "Unsupported operator: " << op << endl;
+            return true;
+        } else if (node->value == "OR") {
+            for (const TreeNode* child : node->children) {
+                if (evaluateNode(child, row)) {
+                    return true;
+                }
+            }
             return false;
+        } else {
+            // Assume leaf node represents a column name for simplicity
+            return find(row.columns.begin(), row.columns.end(), node->value) != row.columns.end();
         }
     }
 };
 
+void postorderTraversal(const TreeNode* node) {
+    if (node == nullptr) {
+        return;
+    }
+
+    for (const TreeNode* child : node->children) {
+        postorderTraversal(child);
+    }
+
+    cout << node->value << " ";
+}
+
 int main() {
-    string filename = "example.csv";
-    CSVReader csvReader(filename);
+    // Example usage:
+    CSVReader csvReader("example.csv");
+    if (csvReader.readCSV()) {
+        string filterExpression = "(((column_name = 'practo') and (column_name != 'dogreat')) or (column_name <= 100))";
+        FilterExpressionParser parser(filterExpression);
+        TreeNode* root = parser.parseExpression();
 
-    string filterExpression = "(((1 = 'practo') and (2 != 'dogreat')) or (3 <= 100))";
-
-    vector<CSVRow> filteredData = csvReader.filterRows(filterExpression);
-
-    for (const auto& row : filteredData) {
-        for (const auto& column : row.columns) {
-            cout << column << " ";
-        }
+        cout << "Postorder Traversal of the Expression Tree: ";
+        postorderTraversal(root);
         cout << endl;
+
+        FilterExpressionEvaluator evaluator(root);
+
+        // Filter and process rows as needed
+        for (const Row& row : csvReader.getRows()) {
+            if (evaluator.evaluateExpression(row)) {
+                // Process the matching row
+                for (const string& column : row.columns) {
+                    cout << column << "\t";
+                }
+                cout << endl;
+            }
+        }
     }
 
     return 0;
